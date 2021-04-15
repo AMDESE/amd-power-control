@@ -1,0 +1,13 @@
+{
+  "IdButton": "CHASSIS_ID_BTN",
+  "NMIButton": "MON_P0_NMI_BTN",
+  "NMIOut": "ASSERT_NMI_BTN",
+  "PostComplete": "MON_PWROK",
+  "PwrButton": "MON_P0_PWR_BTN",
+  "PwrOK": "MON_P0_PWR_GOOD",
+  "PwrOut": "ASSERT_PWR_BTN",
+  "RstButton": "MON_P0_RST_BTN",
+  "RstOut": "ASSERT_RST_BTN",
+  "BmcReady": "ASSERT_BMC_READY"
+}
+
