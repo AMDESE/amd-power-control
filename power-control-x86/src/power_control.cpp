@@ -1,5 +1,6 @@
 /*
 // Copyright (c) 2018-2019 Intel Corporation
+// Copyright (c) 2021 AMD Inc
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,6 +33,11 @@
 #include <fstream>
 #include <iostream>
 #include <string_view>
+
+#define COMMAND_BOARD_ID    ("/sbin/fw_printenv -n board_id")
+#define COMMAND_OUTPUT_LEN  (8)
+#define ETHANOLX_ID         ('4')
+#define DAYTONAX_ID         ('6')
 
 namespace power_control
 {
@@ -106,6 +112,56 @@ enum class PowerState
     checkForWarmReset,
 };
 
+static bool isDaytonax = false;
+static bool getPlatformID()
+{
+    FILE *pf;
+
+    char data[COMMAND_OUTPUT_LEN];
+
+    // Setup pipe for reading and execute to get u-boot environment
+    // variable board_id.
+    pf = popen(COMMAND_BOARD_ID,"r");
+
+    // Error handling
+    if(pf < 0)
+    {
+        std::cerr << "Unable to get Board ID, errno: " << errno << "message: " << strerror(errno) << "\n";
+        return false;
+    }
+
+    // Get the data from the process execution
+    if (fgets(data, COMMAND_OUTPUT_LEN , pf) == NULL)
+    {
+        std::cerr << "Board ID data is null, errno: " << errno << "message: " << strerror(errno) << "\n";
+        return false;
+    }
+
+    // the data is now in 'data'
+    if (pclose(pf) != 0)
+    {
+        std::cerr << " Error: Failed to close command stream\n";
+        return false;
+    }
+
+    switch(data[0])
+    {
+        case ETHANOLX_ID:
+            power_control::isDaytonax = false;
+            return true;
+
+
+        case DAYTONAX_ID:
+            power_control::isDaytonax = true;
+            return true;
+
+        default:
+            std::cerr << " Unidentified Board ID: " << data << "\n";
+            return false;
+    }
+
+    return false;
+}
 static int getGPIOValue(const std::string& name)
 {
     int value;
@@ -595,61 +651,61 @@ static bool wasPowerDropped()
 
 static void powerRestorePolicyCheck()
 {
-	// Check restore policy on DBus
-	conn->async_method_call(
-		[](boost::system::error_code ec,
-				const std::variant<std::string>& restorepolicy) {
-		if (ec)
-		{
-			return;
-		}
-		const std::string* policy =
-				std::get_if<std::string>(&restorepolicy);
-		if (policy == nullptr)
-		{
-			std::cerr << "Unable to read restore policy\n";
-			return;
-		}
+    // Check restore policy on DBus
+    conn->async_method_call(
+        [](boost::system::error_code ec,
+                const std::variant<std::string>& restorepolicy) {
+        if (ec)
+        {
+            return;
+        }
+        const std::string* policy =
+                std::get_if<std::string>(&restorepolicy);
+        if (policy == nullptr)
+        {
+            std::cerr << "Unable to read restore policy\n";
+            return;
+        }
 
-		if (policy->compare("None") == 0)
-		{
-			return;
-		}
-		else
-		{
-			std::cerr << "Invoking Restore Policy: " << policy << "\n";
+        if (policy->compare("None") == 0)
+        {
+            return;
+        }
+        else
+        {
+            std::cerr << "Invoking Restore Policy: " << policy << "\n";
 
-			sd_journal_send("MESSAGE=PowerControl: power restore policy applied",
-					"PRIORITY=%i", LOG_INFO, "REDFISH_MESSAGE_ID=%s",
-					"OpenBMC.0.1.PowerRestorePolicyApplied", NULL);
+            sd_journal_send("MESSAGE=PowerControl: power restore policy applied",
+                    "PRIORITY=%i", LOG_INFO, "REDFISH_MESSAGE_ID=%s",
+                    "OpenBMC.0.1.PowerRestorePolicyApplied", NULL);
 
-			if (policy->compare("AlwaysOn") == 0)
-			{
-				sendPowerControlEvent(Event::powerOnRequest);
-				setRestartCauseProperty(getRestartCause(RestartCause::powerPolicyOn));
-			}
-			else if (policy->compare("Policy.Restore") == 0)
-			{
-				if (wasPowerDropped())
-				{
-					std::cerr << "Power was dropped, restoring Host On state\n";
-					sendPowerControlEvent(Event::powerOnRequest);
-					setRestartCauseProperty(getRestartCause(RestartCause::powerPolicyRestore));
-				}
-				else
-				{
-					std::cerr << "No power drop, restoring Host Off state\n";
-				}
-			}
-			// We're done with the previous power state for the restore policy, so store
-			// the current state
-			savePowerState(powerState);
-		}
-	},
-	"xyz.openbmc_project.Settings",
-	"/xyz/openbmc_project/control/host0/power_restore_policy",
-	"org.freedesktop.DBus.Properties", "Get",
-	"xyz.openbmc_project.Control.Power.RestorePolicy", "PowerRestorePolicy");
+            if (policy->compare("AlwaysOn") == 0)
+            {
+                sendPowerControlEvent(Event::powerOnRequest);
+                setRestartCauseProperty(getRestartCause(RestartCause::powerPolicyOn));
+            }
+            else if (policy->compare("Policy.Restore") == 0)
+            {
+                if (wasPowerDropped())
+                {
+                    std::cerr << "Power was dropped, restoring Host On state\n";
+                    sendPowerControlEvent(Event::powerOnRequest);
+                    setRestartCauseProperty(getRestartCause(RestartCause::powerPolicyRestore));
+                }
+                else
+                {
+                    std::cerr << "No power drop, restoring Host Off state\n";
+                }
+            }
+            // We're done with the previous power state for the restore policy, so store
+            // the current state
+            savePowerState(powerState);
+        }
+    },
+    "xyz.openbmc_project.Settings",
+    "/xyz/openbmc_project/control/host0/power_restore_policy",
+    "org.freedesktop.DBus.Properties", "Get",
+    "xyz.openbmc_project.Control.Power.RestorePolicy", "PowerRestorePolicy");
 }
 
 static bool requestGPIOEvents(
@@ -769,24 +825,52 @@ static int setGPIOOutputForMs(const std::string& name, const int value,
 
 static void powerOn()
 {
-    setGPIOOutputForMs("ASSERT_PWR_BTN", 1, powerPulseTimeMs);
+    if(power_control::isDaytonax)
+    {
+        setGPIOOutputForMs("ASSERT_PWR_BTN", 0, powerPulseTimeMs);
+    }
+    else
+    {
+        setGPIOOutputForMs("ASSERT_PWR_BTN", 1, powerPulseTimeMs);
+    }
 }
 
 static void gracefulPowerOff()
 {
-    setGPIOOutputForMs("ASSERT_PWR_BTN", 1, powerPulseTimeMs);
+    if(power_control::isDaytonax)
+    {
+        setGPIOOutputForMs("ASSERT_PWR_BTN", 0, powerPulseTimeMs);
+    }
+    else
+    {
+        setGPIOOutputForMs("ASSERT_PWR_BTN", 1, powerPulseTimeMs);
+    }
 }
 
 static void forcePowerOff()
 {
-    setGPIOOutputForMs("ASSERT_PWR_BTN", 1, forceOffPulseTimeMs);
-
+    if(power_control::isDaytonax)
+    {
+        setGPIOOutputForMs("ASSERT_PWR_BTN", 0, forceOffPulseTimeMs);
+    }
+    else
+    {
+        setGPIOOutputForMs("ASSERT_PWR_BTN", 1, forceOffPulseTimeMs);
+    }
     return;
 }
 
 static void reset()
 {
-    setGPIOOutputForMs("ASSERT_RST_BTN", 1, resetPulseTimeMs);
+    if(power_control::isDaytonax)
+    {
+        setGPIOOutputForMs("ASSERT_RST_BTN", 0, resetPulseTimeMs);
+    }
+    else
+    {
+        setGPIOOutputForMs("ASSERT_RST_BTN", 1, resetPulseTimeMs);
+    }
+
 }
 
 static void gracefulPowerOffTimerStart()
@@ -1366,7 +1450,15 @@ static void nmiReset()
 {
     const static constexpr int nmiOutPulseTimeMs = 200;
 
-    setGPIOOutputForMs("ASSERT_NMI_BTN", 1, nmiOutPulseTimeMs);
+    if (power_control::isDaytonax)
+    {
+        setGPIOOutputForMs("ASSERT_NMI_BTN", 0, nmiOutPulseTimeMs);
+
+    }
+    else
+    {
+        setGPIOOutputForMs("ASSERT_NMI_BTN", 1, nmiOutPulseTimeMs);
+    }
 
     // log to redfish
     nmiDiagIntLog();
@@ -1492,6 +1584,14 @@ static void idButtonHandler()
 int main(int argc, char* argv[])
 {
     std::cerr << "Start Chassis power control service...\n";
+
+    bool platformID = power_control::getPlatformID();
+    if(false == platformID)
+    {
+        std::cerr << "Unable to get Platform ID\n";
+        return -1;
+    }
+
     power_control::conn =
         std::make_shared<sdbusplus::asio::connection>(power_control::io);
 
@@ -1521,9 +1621,21 @@ int main(int argc, char* argv[])
 
     // Set BMC_READY to High
     gpiod::line gpioLine;
-    if (!power_control::setGPIOOutput("ASSERT_BMC_READY", 1, gpioLine))
+
+    if (power_control::isDaytonax)
     {
-        return -1;
+        if (!power_control::setGPIOOutput("ASSERT_BMC_READY", 0, gpioLine))
+        {
+            return -1;
+        }
+
+    }
+    else
+    {
+        if (!power_control::setGPIOOutput("ASSERT_BMC_READY", 1, gpioLine))
+        {
+            return -1;
+        }
     }
 
     // Initialize the power state
