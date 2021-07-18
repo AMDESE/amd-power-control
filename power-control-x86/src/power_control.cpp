@@ -34,11 +34,6 @@
 #include <iostream>
 #include <string_view>
 
-#define COMMAND_BOARD_ID    ("/sbin/fw_printenv -n board_id")
-#define COMMAND_OUTPUT_LEN  (8)
-#define ETHANOLX_ID         ('4')
-#define DAYTONAX_ID         ('6')
-
 namespace power_control
 {
 static boost::asio::io_service io;
@@ -94,10 +89,6 @@ static gpiod::line powerButtonLine;
 static boost::asio::posix::stream_descriptor powerButtonEvent(io);
 static gpiod::line resetButtonLine;
 static boost::asio::posix::stream_descriptor resetButtonEvent(io);
-static gpiod::line nmiButtonLine;
-static boost::asio::posix::stream_descriptor nmiButtonEvent(io);
-static gpiod::line idButtonLine;
-static boost::asio::posix::stream_descriptor idButtonEvent(io);
 
 enum class PowerState
 {
@@ -112,56 +103,6 @@ enum class PowerState
     checkForWarmReset,
 };
 
-static bool isDaytonax = false;
-static bool getPlatformID()
-{
-    FILE *pf;
-
-    char data[COMMAND_OUTPUT_LEN];
-
-    // Setup pipe for reading and execute to get u-boot environment
-    // variable board_id.
-    pf = popen(COMMAND_BOARD_ID,"r");
-
-    // Error handling
-    if(pf < 0)
-    {
-        std::cerr << "Unable to get Board ID, errno: " << errno << "message: " << strerror(errno) << "\n";
-        return false;
-    }
-
-    // Get the data from the process execution
-    if (fgets(data, COMMAND_OUTPUT_LEN , pf) == NULL)
-    {
-        std::cerr << "Board ID data is null, errno: " << errno << "message: " << strerror(errno) << "\n";
-        return false;
-    }
-
-    // the data is now in 'data'
-    if (pclose(pf) != 0)
-    {
-        std::cerr << " Error: Failed to close command stream\n";
-        return false;
-    }
-
-    switch(data[0])
-    {
-        case ETHANOLX_ID:
-            power_control::isDaytonax = false;
-            return true;
-
-
-        case DAYTONAX_ID:
-            power_control::isDaytonax = true;
-            return true;
-
-        default:
-            std::cerr << " Unidentified Board ID: " << data << "\n";
-            return false;
-    }
-
-    return false;
-}
 static int getGPIOValue(const std::string& name)
 {
     int value;
@@ -825,52 +766,23 @@ static int setGPIOOutputForMs(const std::string& name, const int value,
 
 static void powerOn()
 {
-    if(power_control::isDaytonax)
-    {
-        setGPIOOutputForMs("ASSERT_PWR_BTN", 0, powerPulseTimeMs);
-    }
-    else
-    {
-        setGPIOOutputForMs("ASSERT_PWR_BTN", 1, powerPulseTimeMs);
-    }
+    setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
 }
 
 static void gracefulPowerOff()
 {
-    if(power_control::isDaytonax)
-    {
-        setGPIOOutputForMs("ASSERT_PWR_BTN", 0, powerPulseTimeMs);
-    }
-    else
-    {
-        setGPIOOutputForMs("ASSERT_PWR_BTN", 1, powerPulseTimeMs);
-    }
+    setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
 }
 
 static void forcePowerOff()
 {
-    if(power_control::isDaytonax)
-    {
-        setGPIOOutputForMs("ASSERT_PWR_BTN", 0, forceOffPulseTimeMs);
-    }
-    else
-    {
-        setGPIOOutputForMs("ASSERT_PWR_BTN", 1, forceOffPulseTimeMs);
-    }
+    setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, forceOffPulseTimeMs);
     return;
 }
 
 static void reset()
 {
-    if(power_control::isDaytonax)
-    {
-        setGPIOOutputForMs("ASSERT_RST_BTN", 0, resetPulseTimeMs);
-    }
-    else
-    {
-        setGPIOOutputForMs("ASSERT_RST_BTN", 1, resetPulseTimeMs);
-    }
-
+    setGPIOOutputForMs("ASSERT_RST_BTN_L", 0, resetPulseTimeMs);
 }
 
 static void gracefulPowerOffTimerStart()
@@ -1449,16 +1361,7 @@ static void nmiSetEnableProperty(bool value)
 static void nmiReset()
 {
     const static constexpr int nmiOutPulseTimeMs = 200;
-
-    if (power_control::isDaytonax)
-    {
-        setGPIOOutputForMs("ASSERT_NMI_BTN", 0, nmiOutPulseTimeMs);
-
-    }
-    else
-    {
-        setGPIOOutputForMs("ASSERT_NMI_BTN", 1, nmiOutPulseTimeMs);
-    }
+    setGPIOOutputForMs("ASSERT_NMI_BTN_L", 0, nmiOutPulseTimeMs);
 
     // log to redfish
     nmiDiagIntLog();
@@ -1529,68 +1432,11 @@ static void setNmiSource()
     nmiSetEnableProperty(true);
 }
 
-static void nmiButtonHandler()
-{
-    gpiod::line_event gpioLineEvent = nmiButtonLine.event_read();
-
-    if (gpioLineEvent.event_type == gpiod::line_event::FALLING_EDGE)
-    {
-        nmiButtonPressLog();
-        nmiButtonIface->set_property("ButtonPressed", true);
-        setNmiSource();
-    }
-    else if (gpioLineEvent.event_type == gpiod::line_event::RISING_EDGE)
-    {
-        nmiButtonIface->set_property("ButtonPressed", false);
-    }
-    nmiButtonEvent.async_wait(boost::asio::posix::stream_descriptor::wait_read,
-                              [](const boost::system::error_code ec) {
-                                  if (ec)
-                                  {
-                                      std::cerr << "NMI button handler error: "
-                                                << ec.message() << "\n";
-                                      return;
-                                  }
-                                  nmiButtonHandler();
-                              });
-}
-
-static void idButtonHandler()
-{
-    gpiod::line_event gpioLineEvent = idButtonLine.event_read();
-
-    if (gpioLineEvent.event_type == gpiod::line_event::FALLING_EDGE)
-    {
-        idButtonIface->set_property("ButtonPressed", true);
-    }
-    else if (gpioLineEvent.event_type == gpiod::line_event::RISING_EDGE)
-    {
-        idButtonIface->set_property("ButtonPressed", false);
-    }
-    idButtonEvent.async_wait(boost::asio::posix::stream_descriptor::wait_read,
-                             [](const boost::system::error_code& ec) {
-                                 if (ec)
-                                 {
-                                     std::cerr << "ID button handler error: "
-                                               << ec.message() << "\n";
-                                     return;
-                                 }
-                                 idButtonHandler();
-                             });
-}
-
 } // namespace power_control
 
 int main(int argc, char* argv[])
 {
     std::cerr << "Start Chassis power control service...\n";
-
-    bool platformID = power_control::getPlatformID();
-    if(false == platformID)
-    {
-        std::cerr << "Unable to get Platform ID\n";
-        return -1;
-    }
 
     power_control::conn =
         std::make_shared<sdbusplus::asio::connection>(power_control::io);
@@ -1604,39 +1450,13 @@ int main(int argc, char* argv[])
     power_control::conn->request_name("xyz.openbmc_project.Control.Host.RestartCause");
 
     // Request PS_PWROK GPIO events
-    power_control::requestGPIOEvents("MON_P0_PWR_GOOD", power_control::psPowerOKHandler, power_control::psPowerOKLine, power_control::psPowerOKEvent);
+    power_control::requestGPIOEvents("MON_PWR_GOOD", power_control::psPowerOKHandler, power_control::psPowerOKLine, power_control::psPowerOKEvent);
 
     // Request POWER_BUTTON GPIO events
-    power_control::requestGPIOEvents("MON_P0_PWR_BTN", power_control::powerButtonHandler, power_control::powerButtonLine, power_control::powerButtonEvent);
+    power_control::requestGPIOEvents("MON_PWR_BTN_L", power_control::powerButtonHandler, power_control::powerButtonLine, power_control::powerButtonEvent);
 
     // Request RESET_BUTTON GPIO events
-    power_control::requestGPIOEvents("MON_P0_RST_BTN", power_control::resetButtonHandler, power_control::resetButtonLine, power_control::resetButtonEvent);
-
-    // Request NMI_BUTTON GPIO events
-    power_control::requestGPIOEvents("MON_P0_NMI_BTN", power_control::nmiButtonHandler, power_control::nmiButtonLine, power_control::nmiButtonEvent);
-
-
-    // Request ID_BUTTON GPIO events
-    power_control::requestGPIOEvents("CHASSIS_ID_BTN", power_control::idButtonHandler, power_control::idButtonLine, power_control::idButtonEvent);
-
-    // Set BMC_READY to High
-    gpiod::line gpioLine;
-
-    if (power_control::isDaytonax)
-    {
-        if (!power_control::setGPIOOutput("ASSERT_BMC_READY", 0, gpioLine))
-        {
-            return -1;
-        }
-
-    }
-    else
-    {
-        if (!power_control::setGPIOOutput("ASSERT_BMC_READY", 1, gpioLine))
-        {
-            return -1;
-        }
-    }
+    power_control::requestGPIOEvents("MON_RST_BTN_L", power_control::resetButtonHandler, power_control::resetButtonLine, power_control::resetButtonEvent);
 
     // Initialize the power state
     power_control::powerState = power_control::PowerState::off;
@@ -1836,8 +1656,8 @@ int main(int argc, char* argv[])
         "/xyz/openbmc_project/chassis/buttons/nmi",
         "xyz.openbmc_project.Chassis.Buttons");
 
-        // Check NMI button state
-    bool nmiButtonPressed = power_control::nmiButtonLine.get_value() == 0;
+    // Check NMI button state
+    bool nmiButtonPressed = false;
     power_control::nmiButtonIface->register_property("ButtonPressed",
                                                       nmiButtonPressed);
 
@@ -1856,18 +1676,6 @@ int main(int argc, char* argv[])
     power_control::nmiOutIface->initialize();
 
 
-    // ID Button Interface
-    power_control::idButtonIface = buttonsServer.add_interface(
-        "/xyz/openbmc_project/chassis/buttons/id",
-        "xyz.openbmc_project.Chassis.Buttons");
-
-    // Check ID button state
-    bool idButtonPressed = power_control::idButtonLine.get_value() == 0;
-    power_control::idButtonIface->register_property("ButtonPressed",
-                                                        idButtonPressed);
-
-    power_control::idButtonIface->initialize();
-
     // OS State Service
     sdbusplus::asio::object_server osServer =
         sdbusplus::asio::object_server(power_control::conn);
@@ -1880,7 +1688,7 @@ int main(int argc, char* argv[])
     // Get the initial OS state based on POST complete
     //      0: Asserted, OS state is "Standby" (ready to boot)
     //      1: De-Asserted, OS state is "Inactive"
-    std::string osState = power_control::getGPIOValue("MON_PWROK") > 0
+    std::string osState = power_control::getGPIOValue("MON_POST_COMPLETE") > 0
                               ? "Standby"
                               : "Inactive";
 
@@ -1927,6 +1735,31 @@ int main(int argc, char* argv[])
     power_control::restartCauseIface->initialize();
 
     power_control::currentHostStateMonitor();
+
+    gpiod::line gpioLine;
+    // Set ASSERT_NMI_BTN_L to High
+    if (!power_control::setGPIOOutput("ASSERT_NMI_BTN_L", 1, gpioLine))
+    {
+        return -1;
+    }
+
+    // Set ASSERT_RST_BTN_L to High
+    if (!power_control::setGPIOOutput("ASSERT_RST_BTN_L", 1, gpioLine))
+    {
+        return -1;
+    }
+
+    // Set ASSERT_PWR_BTN_L to High
+    if (!power_control::setGPIOOutput("ASSERT_PWR_BTN_L", 1, gpioLine))
+    {
+        return -1;
+    }
+
+    // Set BMC_READY to High
+    if (!power_control::setGPIOOutput("ASSERT_BMC_READY", 1, gpioLine))
+    {
+        return -1;
+    }
 
     power_control::io.run();
 
