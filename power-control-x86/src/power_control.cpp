@@ -34,38 +34,6 @@
 #include <iostream>
 #include <string_view>
 
-constexpr auto ONYX_SLT     = 61;   //0x3D
-constexpr auto ONYX_1       = 64;   //0x40
-constexpr auto ONYX_2       = 65;   //0x41
-constexpr auto ONYX_3       = 66;   //0x42
-constexpr auto ONYX_FR4     = 82;   //0x52
-constexpr auto QUARTZ_DAP   = 62;   //0x3E
-constexpr auto QUARTZ_1     = 67;   //0x43
-constexpr auto QUARTZ_2     = 68;   //0x44
-constexpr auto QUARTZ_3     = 69;   //0x45
-constexpr auto QUARTZ_FR4   = 81;   //0x51
-constexpr auto RUBY_1       = 70;   //0x46
-constexpr auto RUBY_2       = 71;   //0x47
-constexpr auto RUBY_3       = 72;   //0x48
-constexpr auto TITANITE_1   = 73;   //0x49
-constexpr auto TITANITE_2   = 74;   //0x4A
-constexpr auto TITANITE_3   = 75;   //0x4B
-constexpr auto TITANITE_4   = 76;   //0x4C
-constexpr auto TITANITE_5   = 77;   //0x4D
-constexpr auto TITANITE_6   = 78;   //0x4E
-
-#define COMMAND_BOARD_ID    ("/sbin/fw_printenv -n board_id")
-#define COMMAND_OUTPUT_LEN  (8)
-
-/* Definition for APML Mux setting */
-#define I2C_MUX         0x70
-#define I2C_MUX_MR46    0x46
-#define I2C_MUX_MR64    0x40  // MUX port sel
-#define I2C_MUX_MR65    0x41  // MUX port rw enable
-#define CMD_BUFF_LEN    64
-#define BDID_BUFF_LEN   8
-
-
 namespace power_control
 {
 static boost::asio::io_service io;
@@ -84,13 +52,14 @@ static std::shared_ptr<sdbusplus::asio::dbus_interface> idButtonIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> nmiOutIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> restartCauseIface;
 
-const static constexpr int powerPulseTimeMs = 200;
-const static constexpr int forceOffPulseTimeMs = 15000;
-const static constexpr int resetPulseTimeMs = 500;
+const static constexpr int powerPulseTimeMs = 100;
+const static constexpr int forceOffPulseTimeMs = 5000;
+const static constexpr int resetPulseTimeMs = 100;
 const static constexpr int powerCycleTimeMs = 5000;
 const static constexpr int psPowerOKWatchdogTimeMs = 8000;
+const static constexpr int psPowerOKRampDownTimeMs = 8000;
 const static constexpr int gracefulPowerOffTimeMs = 90000;
-const static constexpr int warmResetCheckTimeMs = 500;
+const static constexpr int coldResetCheckTimeMs = 100;
 const static constexpr int powerOffSaveTimeMs = 7000;
 
 const static std::filesystem::path powerControlDir = "/var/lib/power-control";
@@ -105,10 +74,12 @@ static boost::asio::steady_timer gpioAssertTimer(io);
 static boost::asio::steady_timer powerCycleTimer(io);
 // Time OS gracefully powering off
 static boost::asio::steady_timer gracefulPowerOffTimer(io);
-// Time the warm reset check
-static boost::asio::steady_timer warmResetCheckTimer(io);
+// Time the cold reset check
+static boost::asio::steady_timer coldResetCheckTimer(io);
 // Time power supply power OK assertion on power-on
 static boost::asio::steady_timer psPowerOKWatchdogTimer(io);
+// Time power supply power OK ramp down on force power off
+static boost::asio::steady_timer psPowerOKRampDownTimer(io);
 // Time power-off state save for power loss tracking
 static boost::asio::steady_timer powerStateSaveTimer(io);
 // POH timer
@@ -132,83 +103,8 @@ enum class PowerState
     cycleOff,
     transitionToCycleOff,
     gracefulTransitionToCycleOff,
-    checkForWarmReset,
+    checkForColdReset,
 };
-
-/* Read platform ID from env */
-static bool getPlatformID(char *data)
-{
-    FILE *pf;
-    // Setup pipe for reading and execute to get u-boot environment variable board_id.
-    pf = popen(COMMAND_BOARD_ID,"r");
-    if(pf < 0)
-    {
-        std::cerr << "Unable to read Board ID from env" << "\n";
-        return false;
-    }
-    // Get the data from the process execution
-    if (fgets(data, COMMAND_OUTPUT_LEN , pf) == NULL)
-    {
-        std::cerr << "Board ID is not set in env" << "\n";
-        return false;
-    }
-    // the data is now in 'data'
-    if (pclose(pf) != 0)
-    {
-        std::cerr << "Failed to close command stream" << "\n";
-        return false;
-    }
-    return true;
-}
-
-static void resetAPMLMuxChannel()
-{
-    char cmd[CMD_BUFF_LEN];
-    char data[BDID_BUFF_LEN];
-    unsigned int board_id;
-    std::stringstream ss;
-    int num_of_apml_bus=2;  /* Default num of bus = 2 */
-    int apml_bus=2;         /* start with APML bus 2 */
-
-    /* Code for APML bus Mux settings */
-    if (power_control::psPowerOKLine.get_value() > 0)
-    {
-        if (getPlatformID(data))
-        {
-            ss << std::hex << (std::string)data;
-            ss >> board_id;
-            switch (board_id)
-            {
-                case ONYX_SLT:
-                case ONYX_FR4:
-                case ONYX_1 ... ONYX_3:
-                case RUBY_1 ... RUBY_3:
-                    /* For Onyx and Ruby 1P systems */
-                    num_of_apml_bus = 1;
-                    break;
-                default:
-                    /* For Quartz and Titanite 2P systems */
-                    num_of_apml_bus = 2;
-                    break;
-            }//switch
-        }
-        for  ( int i=0; i<num_of_apml_bus; i++)
-        {
-            std::cout << "Setting APML Mux registers on i2c bus " << apml_bus << std::endl;
-            sprintf(cmd, "i2cset -f -y %d 0x%02x 0x%02x 0x01 >& /dev/null\n", apml_bus, I2C_MUX, I2C_MUX_MR46);
-            if (system(cmd) != 0)
-                std::cout <<"Failed to set APML MUX on bus " << apml_bus << " reg 0x" << I2C_MUX_MR46 << " OR no CPU installed" << "\n";
-            sprintf(cmd, "i2cset -f -y %d 0x%02x 0x%02x 0x40 >& /dev/null\n", apml_bus, I2C_MUX, I2C_MUX_MR64);
-            if (system(cmd) != 0)
-                std::cout <<"Failed to set APML MUX on bus " << apml_bus << " reg 0x" << I2C_MUX_MR64 << " OR no CPU installed" << "\n";
-            sprintf(cmd, "i2cset -f -y %d 0x%02x 0x%02x 0x40 >& /dev/null\n", apml_bus, I2C_MUX, I2C_MUX_MR65);
-            if (system(cmd) != 0)
-                std::cout <<"Failed to set APML MUX on bus " << apml_bus << " reg 0x" << I2C_MUX_MR65<< " OR no CPU installed" << "\n";
-            apml_bus++;
-        }
-    }
-    return;
-}
 
 static int getGPIOValue(const std::string& name)
 {
@@ -272,8 +168,8 @@ static std::string getPowerStateName(PowerState state)
         case PowerState::gracefulTransitionToCycleOff:
             return "Graceful Transition to Power Cycle Off";
             break;
-        case PowerState::checkForWarmReset:
-            return "Check for Warm Reset";
+        case PowerState::checkForColdReset:
+            return "Check for Cold Reset";
             break;
         default:
             return "unknown state: " + std::to_string(static_cast<int>(state));
@@ -305,7 +201,8 @@ enum class Event
     resetRequest,
     gracefulPowerOffRequest,
     gracefulPowerCycleRequest,
-    warmResetDetected,
+    coldResetDetected,
+    psPowerOKRampDownTimerExpired,
 };
 static std::string getEventName(Event event)
 {
@@ -329,6 +226,9 @@ static std::string getEventName(Event event)
         case Event::psPowerOKWatchdogTimerExpired:
             return "power supply power OK watchdog timer expired";
             break;
+        case Event::psPowerOKRampDownTimerExpired:
+            return "power supply power OK RampDown timer expired";
+            break;
         case Event::gracefulPowerOffTimerExpired:
             return "graceful power-off timer expired";
             break;
@@ -350,8 +250,8 @@ static std::string getEventName(Event event)
         case Event::gracefulPowerCycleRequest:
             return "graceful power-cycle request";
             break;
-        case Event::warmResetDetected:
-            return "warm reset detected";
+        case Event::coldResetDetected:
+            return "cold reset detected";
             break;
         default:
             return "unknown event: " + std::to_string(static_cast<int>(event));
@@ -376,7 +276,7 @@ static void powerStateGracefulTransitionToOff(const Event event);
 static void powerStateCycleOff(const Event event);
 static void powerStateTransitionToCycleOff(const Event event);
 static void powerStateGracefulTransitionToCycleOff(const Event event);
-static void powerStateCheckForWarmReset(const Event event);
+static void powerStateCheckForColdReset(const Event event);
 
 static std::function<void(const Event)> getPowerStateHandler(PowerState state)
 {
@@ -406,8 +306,8 @@ static std::function<void(const Event)> getPowerStateHandler(PowerState state)
         case PowerState::gracefulTransitionToCycleOff:
             return powerStateGracefulTransitionToCycleOff;
             break;
-        case PowerState::checkForWarmReset:
-            return powerStateCheckForWarmReset;
+        case PowerState::checkForColdReset:
+            return powerStateCheckForColdReset;
             break;
         default:
             return std::function<void(const Event)>{};
@@ -446,16 +346,16 @@ static constexpr std::string_view getHostState(const PowerState state)
     switch (state)
     {
         case PowerState::on:
+        case PowerState::transitionToOff:
         case PowerState::gracefulTransitionToOff:
+        case PowerState::transitionToCycleOff:
         case PowerState::gracefulTransitionToCycleOff:
+        case PowerState::checkForColdReset:
             return "xyz.openbmc_project.State.Host.HostState.Running";
             break;
         case PowerState::waitForPSPowerOK:
         case PowerState::off:
-        case PowerState::transitionToOff:
-        case PowerState::transitionToCycleOff:
         case PowerState::cycleOff:
-        case PowerState::checkForWarmReset:
             return "xyz.openbmc_project.State.Host.HostState.Off";
             break;
         default:
@@ -472,7 +372,7 @@ static constexpr std::string_view getChassisState(const PowerState state)
         case PowerState::gracefulTransitionToOff:
         case PowerState::transitionToCycleOff:
         case PowerState::gracefulTransitionToCycleOff:
-        case PowerState::checkForWarmReset:
+        case PowerState::checkForColdReset:
             return "xyz.openbmc_project.State.Chassis.PowerState.On";
             break;
         case PowerState::waitForPSPowerOK:
@@ -624,6 +524,15 @@ static void psPowerOKFailedLog()
         "PRIORITY=%i", LOG_INFO, "REDFISH_MESSAGE_ID=%s",
         "OpenBMC.0.1.PowerSupplyPowerGoodFailed", "REDFISH_MESSAGE_ARGS=%d",
         psPowerOKWatchdogTimeMs, NULL);
+}
+
+static void psPowerOKRampDownFailedLog()
+{
+    sd_journal_send(
+        "MESSAGE=PowerControl: power supply power good failed to rampdown",
+        "PRIORITY=%i", LOG_INFO, "REDFISH_MESSAGE_ID=%s",
+        "OpenBMC.0.1.PowerSupplyPowerGoodRampDownFailed", "REDFISH_MESSAGE_ARGS=%d",
+        psPowerOKRampDownTimeMs, NULL);
 }
 
 static void powerRestorePolicyLog()
@@ -962,26 +871,51 @@ static void psPowerOKWatchdogTimerStart()
         });
 }
 
-static void warmResetCheckTimerStart()
+static void psPowerOKRampDownTimerStart()
 {
-    std::cerr << "Warm reset check timer started\n";
-    warmResetCheckTimer.expires_after(
-        std::chrono::milliseconds(warmResetCheckTimeMs));
-    warmResetCheckTimer.async_wait([](const boost::system::error_code ec) {
+    std::cerr << "power supply power OK RampDown timer started\n";
+    psPowerOKRampDownTimer.expires_after(
+        std::chrono::milliseconds(psPowerOKRampDownTimeMs));
+    psPowerOKRampDownTimer.async_wait(
+        [](const boost::system::error_code ec) {
+            if (ec)
+            {
+                // operation_aborted is expected if timer is canceled before
+                // completion.
+                if (ec != boost::asio::error::operation_aborted)
+                {
+                    std::cerr
+                        << "power supply power OK RampDown async_wait failed: "
+                        << ec.message() << "\n";
+                }
+                std::cerr << "power supply power OK RampDown timer canceled\n";
+                return;
+            }
+            std::cerr << "power supply power OK RampDown timer expired\n";
+            sendPowerControlEvent(Event::psPowerOKRampDownTimerExpired);
+        });
+}
+
+static void coldResetCheckTimerStart()
+{
+    std::cerr << "Cold reset check timer started\n";
+    coldResetCheckTimer.expires_after(
+        std::chrono::milliseconds(coldResetCheckTimeMs));
+    coldResetCheckTimer.async_wait([](const boost::system::error_code ec) {
         if (ec)
         {
             // operation_aborted is expected if timer is canceled before
             // completion.
             if (ec != boost::asio::error::operation_aborted)
             {
-                std::cerr << "Warm reset check async_wait failed: "
+                std::cerr << "Cold reset check async_wait failed: "
                           << ec.message() << "\n";
             }
-            std::cerr << "Warm reset check timer canceled\n";
+            std::cerr << "Cold reset check timer canceled\n";
             return;
         }
-        std::cerr << "Warm reset check timer completed\n";
-        sendPowerControlEvent(Event::warmResetDetected);
+        std::cerr << "Cold reset check timer completed\n";
+        sendPowerControlEvent(Event::coldResetDetected);
     });
 }
 
@@ -1146,10 +1080,11 @@ static void powerStateOn(const Event event)
             gracefulPowerOffTimerStart();
             break;
         case Event::resetButtonPressed:
-            setPowerState(PowerState::checkForWarmReset);
-            warmResetCheckTimerStart();
+            setPowerState(PowerState::checkForColdReset);
+            coldResetCheckTimerStart();
             break;
         case Event::powerOffRequest:
+            psPowerOKRampDownTimerStart();
             setPowerState(PowerState::transitionToOff);
             forcePowerOff();
             break;
@@ -1231,7 +1166,12 @@ static void powerStateTransitionToOff(const Event event)
         case Event::psPowerOKDeAssert:
             // Cancel any GPIO assertions held during the transition
             gpioAssertTimer.cancel();
+            psPowerOKRampDownTimer.cancel();
             setPowerState(PowerState::off);
+            break;
+        case Event::psPowerOKRampDownTimerExpired:
+            psPowerOKRampDownFailedLog();
+            setPowerState(PowerState::on);
             break;
         default:
             phosphor::logging::log<phosphor::logging::level::INFO>(
@@ -1327,16 +1267,16 @@ static void powerStateGracefulTransitionToCycleOff(const Event event)
     }
 }
 
-static void powerStateCheckForWarmReset(const Event event)
+static void powerStateCheckForColdReset(const Event event)
 {
     logEvent(__FUNCTION__, event);
     switch (event)
     {
-        case Event::warmResetDetected:
+        case Event::coldResetDetected:
             setPowerState(PowerState::on);
             break;
         case Event::psPowerOKDeAssert:
-            warmResetCheckTimer.cancel();
+            coldResetCheckTimer.cancel();
             setPowerState(PowerState::off);
             break;
         default:
@@ -1356,9 +1296,6 @@ static void psPowerOKHandler()
             : Event::psPowerOKDeAssert;
 
     sendPowerControlEvent(powerControlEvent);
-
-    /* Reset the APML Mux channel with each power on event */
-    resetAPMLMuxChannel();
 
     psPowerOKEvent.async_wait(
         boost::asio::posix::stream_descriptor::wait_read,
@@ -1621,14 +1558,14 @@ int main(int argc, char* argv[])
                 addRestartCause(power_control::RestartCause::command);
             }
             else if (requested == "xyz.openbmc_project.State.Host.Transition."
-                                  "GracefulWarmReboot")
+                                  "GracefulColdReboot")
             {
                 sendPowerControlEvent(
                     power_control::Event::gracefulPowerCycleRequest);
                 addRestartCause(power_control::RestartCause::command);
             }
             else if (requested == "xyz.openbmc_project.State.Host.Transition."
-                                  "ForceWarmReboot")
+                                  "ForceColdReboot")
             {
                 sendPowerControlEvent(power_control::Event::resetRequest);
                 addRestartCause(power_control::RestartCause::command);
