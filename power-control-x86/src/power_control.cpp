@@ -59,7 +59,7 @@ const static constexpr int powerCycleTimeMs = 5000;
 const static constexpr int psPowerOKWatchdogTimeMs = 8000;
 const static constexpr int psPowerOKRampDownTimeMs = 8000;
 const static constexpr int gracefulPowerOffTimeMs = 90000;
-const static constexpr int coldResetCheckTimeMs = 100;
+const static constexpr int warmResetCheckTimeMs = 100;
 const static constexpr int powerOffSaveTimeMs = 7000;
 
 const static std::filesystem::path powerControlDir = "/var/lib/power-control";
@@ -74,8 +74,8 @@ static boost::asio::steady_timer gpioAssertTimer(io);
 static boost::asio::steady_timer powerCycleTimer(io);
 // Time OS gracefully powering off
 static boost::asio::steady_timer gracefulPowerOffTimer(io);
-// Time the cold reset check
-static boost::asio::steady_timer coldResetCheckTimer(io);
+// Time the warm reset check
+static boost::asio::steady_timer warmResetCheckTimer(io);
 // Time power supply power OK assertion on power-on
 static boost::asio::steady_timer psPowerOKWatchdogTimer(io);
 // Time power supply power OK ramp down on force power off
@@ -103,7 +103,7 @@ enum class PowerState
     cycleOff,
     transitionToCycleOff,
     gracefulTransitionToCycleOff,
-    checkForColdReset,
+    checkForWarmReset,
 };
 
 static int getGPIOValue(const std::string& name)
@@ -168,8 +168,8 @@ static std::string getPowerStateName(PowerState state)
         case PowerState::gracefulTransitionToCycleOff:
             return "Graceful Transition to Power Cycle Off";
             break;
-        case PowerState::checkForColdReset:
-            return "Check for Cold Reset";
+        case PowerState::checkForWarmReset:
+            return "Check for Warm Reset";
             break;
         default:
             return "unknown state: " + std::to_string(static_cast<int>(state));
@@ -201,7 +201,7 @@ enum class Event
     resetRequest,
     gracefulPowerOffRequest,
     gracefulPowerCycleRequest,
-    coldResetDetected,
+    warmResetDetected,
     psPowerOKRampDownTimerExpired,
 };
 static std::string getEventName(Event event)
@@ -250,8 +250,8 @@ static std::string getEventName(Event event)
         case Event::gracefulPowerCycleRequest:
             return "graceful power-cycle request";
             break;
-        case Event::coldResetDetected:
-            return "cold reset detected";
+        case Event::warmResetDetected:
+            return "warm reset detected";
             break;
         default:
             return "unknown event: " + std::to_string(static_cast<int>(event));
@@ -276,7 +276,7 @@ static void powerStateGracefulTransitionToOff(const Event event);
 static void powerStateCycleOff(const Event event);
 static void powerStateTransitionToCycleOff(const Event event);
 static void powerStateGracefulTransitionToCycleOff(const Event event);
-static void powerStateCheckForColdReset(const Event event);
+static void powerStateCheckForWarmReset(const Event event);
 
 static std::function<void(const Event)> getPowerStateHandler(PowerState state)
 {
@@ -306,8 +306,8 @@ static std::function<void(const Event)> getPowerStateHandler(PowerState state)
         case PowerState::gracefulTransitionToCycleOff:
             return powerStateGracefulTransitionToCycleOff;
             break;
-        case PowerState::checkForColdReset:
-            return powerStateCheckForColdReset;
+        case PowerState::checkForWarmReset:
+            return powerStateCheckForWarmReset;
             break;
         default:
             return std::function<void(const Event)>{};
@@ -350,7 +350,7 @@ static constexpr std::string_view getHostState(const PowerState state)
         case PowerState::gracefulTransitionToOff:
         case PowerState::transitionToCycleOff:
         case PowerState::gracefulTransitionToCycleOff:
-        case PowerState::checkForColdReset:
+        case PowerState::checkForWarmReset:
             return "xyz.openbmc_project.State.Host.HostState.Running";
             break;
         case PowerState::waitForPSPowerOK:
@@ -372,7 +372,7 @@ static constexpr std::string_view getChassisState(const PowerState state)
         case PowerState::gracefulTransitionToOff:
         case PowerState::transitionToCycleOff:
         case PowerState::gracefulTransitionToCycleOff:
-        case PowerState::checkForColdReset:
+        case PowerState::checkForWarmReset:
             return "xyz.openbmc_project.State.Chassis.PowerState.On";
             break;
         case PowerState::waitForPSPowerOK:
@@ -896,26 +896,26 @@ static void psPowerOKRampDownTimerStart()
         });
 }
 
-static void coldResetCheckTimerStart()
+static void warmResetCheckTimerStart()
 {
-    std::cerr << "Cold reset check timer started\n";
-    coldResetCheckTimer.expires_after(
-        std::chrono::milliseconds(coldResetCheckTimeMs));
-    coldResetCheckTimer.async_wait([](const boost::system::error_code ec) {
+    std::cerr << "Warm reset check timer started\n";
+    warmResetCheckTimer.expires_after(
+        std::chrono::milliseconds(warmResetCheckTimeMs));
+    warmResetCheckTimer.async_wait([](const boost::system::error_code ec) {
         if (ec)
         {
             // operation_aborted is expected if timer is canceled before
             // completion.
             if (ec != boost::asio::error::operation_aborted)
             {
-                std::cerr << "Cold reset check async_wait failed: "
+                std::cerr << "Warm reset check async_wait failed: "
                           << ec.message() << "\n";
             }
-            std::cerr << "Cold reset check timer canceled\n";
+            std::cerr << "Warm reset check timer canceled\n";
             return;
         }
-        std::cerr << "Cold reset check timer completed\n";
-        sendPowerControlEvent(Event::coldResetDetected);
+        std::cerr << "Warm reset check timer completed\n";
+        sendPowerControlEvent(Event::warmResetDetected);
     });
 }
 
@@ -1080,8 +1080,8 @@ static void powerStateOn(const Event event)
             gracefulPowerOffTimerStart();
             break;
         case Event::resetButtonPressed:
-            setPowerState(PowerState::checkForColdReset);
-            coldResetCheckTimerStart();
+            setPowerState(PowerState::checkForWarmReset);
+            warmResetCheckTimerStart();
             break;
         case Event::powerOffRequest:
             psPowerOKRampDownTimerStart();
@@ -1267,16 +1267,16 @@ static void powerStateGracefulTransitionToCycleOff(const Event event)
     }
 }
 
-static void powerStateCheckForColdReset(const Event event)
+static void powerStateCheckForWarmReset(const Event event)
 {
     logEvent(__FUNCTION__, event);
     switch (event)
     {
-        case Event::coldResetDetected:
+        case Event::warmResetDetected:
             setPowerState(PowerState::on);
             break;
         case Event::psPowerOKDeAssert:
-            coldResetCheckTimer.cancel();
+            warmResetCheckTimer.cancel();
             setPowerState(PowerState::off);
             break;
         default:
@@ -1558,14 +1558,14 @@ int main(int argc, char* argv[])
                 addRestartCause(power_control::RestartCause::command);
             }
             else if (requested == "xyz.openbmc_project.State.Host.Transition."
-                                  "GracefulColdReboot")
+                                  "GracefulWarmReboot")
             {
                 sendPowerControlEvent(
                     power_control::Event::gracefulPowerCycleRequest);
                 addRestartCause(power_control::RestartCause::command);
             }
             else if (requested == "xyz.openbmc_project.State.Host.Transition."
-                                  "ForceColdReboot")
+                                  "ForceWarmReboot")
             {
                 sendPowerControlEvent(power_control::Event::resetRequest);
                 addRestartCause(power_control::RestartCause::command);
