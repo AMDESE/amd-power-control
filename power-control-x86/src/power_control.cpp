@@ -59,7 +59,7 @@ const static constexpr int powerCycleTimeMs = 5000;
 const static constexpr int psPowerOKWatchdogTimeMs = 8000;
 const static constexpr int psPowerOKRampDownTimeMs = 8000;
 const static constexpr int gracefulPowerOffTimeMs = 90000;
-const static constexpr int warmResetCheckTimeMs = 100;
+const static constexpr int warmResetCheckTimeMs = 1000;
 const static constexpr int powerOffSaveTimeMs = 7000;
 
 const static std::filesystem::path powerControlDir = "/var/lib/power-control";
@@ -350,12 +350,12 @@ static constexpr std::string_view getHostState(const PowerState state)
         case PowerState::gracefulTransitionToOff:
         case PowerState::transitionToCycleOff:
         case PowerState::gracefulTransitionToCycleOff:
-        case PowerState::checkForWarmReset:
             return "xyz.openbmc_project.State.Host.HostState.Running";
             break;
         case PowerState::waitForPSPowerOK:
         case PowerState::off:
         case PowerState::cycleOff:
+        case PowerState::checkForWarmReset:
             return "xyz.openbmc_project.State.Host.HostState.Off";
             break;
         default:
