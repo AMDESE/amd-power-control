@@ -614,50 +614,48 @@ static void powerRestorePolicyCheck()
                 const std::variant<std::string>& restorepolicy) {
         if (ec)
         {
+            std::cerr << "ec Error in power restore policy check\n";
             return;
         }
         const std::string* policy =
                 std::get_if<std::string>(&restorepolicy);
         if (policy == nullptr)
         {
-            std::cerr << "Unable to read restore policy\n";
+            std::cerr << "Unable to read power restore policy\n";
             return;
         }
 
-        if (policy->compare("None") == 0)
+        std::cerr << "power restore policy is " << policy->c_str() << " \n";
+
+        if (policy->compare("xyz.openbmc_project.Control.Power.RestorePolicy.Policy.AlwaysOn") == 0)
         {
-            return;
+            std::cerr << "Restore policy to Alwaya On\n";
+            sendPowerControlEvent(Event::powerOnRequest);
+            setRestartCauseProperty(getRestartCause(RestartCause::powerPolicyOn));
         }
+        else if (policy->compare("xyz.openbmc_project.Control.Power.RestorePolicy.Policy.Restore") == 0)
+        {
+            if (wasPowerDropped())
+            {
+                std::cerr << "Power was dropped, restoring Host to On state\n";
+                sendPowerControlEvent(Event::powerOnRequest);
+                setRestartCauseProperty(getRestartCause(RestartCause::powerPolicyRestore));
+            }
+            else
+            {
+                std::cerr << "No power drop, restoring Host to Off state\n";
+            }
+        }
+        else if (policy->compare("xyz.openbmc_project.Control.Power.RestorePolicy.Policy.AlwaysOff") == 0)
+            std::cerr << "Restore policy to Always Off\n";
         else
-        {
-            std::cerr << "Invoking Restore Policy: " << policy << "\n";
-
-            sd_journal_send("MESSAGE=PowerControl: power restore policy applied",
+            std::cerr << "Restore policy to None\n";
+        // We're done with the previous power state for the restore policy, so store
+        // the current state
+        sd_journal_send("MESSAGE=PowerControl: power restore policy applied",
                     "PRIORITY=%i", LOG_INFO, "REDFISH_MESSAGE_ID=%s",
                     "OpenBMC.0.1.PowerRestorePolicyApplied", NULL);
-
-            if (policy->compare("AlwaysOn") == 0)
-            {
-                sendPowerControlEvent(Event::powerOnRequest);
-                setRestartCauseProperty(getRestartCause(RestartCause::powerPolicyOn));
-            }
-            else if (policy->compare("Policy.Restore") == 0)
-            {
-                if (wasPowerDropped())
-                {
-                    std::cerr << "Power was dropped, restoring Host On state\n";
-                    sendPowerControlEvent(Event::powerOnRequest);
-                    setRestartCauseProperty(getRestartCause(RestartCause::powerPolicyRestore));
-                }
-                else
-                {
-                    std::cerr << "No power drop, restoring Host Off state\n";
-                }
-            }
-            // We're done with the previous power state for the restore policy, so store
-            // the current state
-            savePowerState(powerState);
-        }
+        savePowerState(powerState);
     },
     "xyz.openbmc_project.Settings",
     "/xyz/openbmc_project/control/host0/power_restore_policy",
@@ -1517,6 +1515,7 @@ int main(int argc, char* argv[])
     // Initialize the power state storage
     if (power_control::initializePowerStateStorage() < 0)
     {
+        std::cerr << " initializePowerStateStorage Failed \n";
         return -1;
     }
 
