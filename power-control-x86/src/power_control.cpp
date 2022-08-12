@@ -614,6 +614,7 @@ static void powerRestorePolicyCheck()
                 const std::variant<std::string>& restorepolicy) {
         if (ec)
         {
+            std::cerr << "Error read restore policy\n";
             return;
         }
         const std::string* policy =
@@ -630,18 +631,18 @@ static void powerRestorePolicyCheck()
         }
         else
         {
-            std::cerr << "Invoking Restore Policy: " << policy << "\n";
+            std::cerr << "Invoking Restore Policy: " << policy->c_str() << " \n";
 
             sd_journal_send("MESSAGE=PowerControl: power restore policy applied",
                     "PRIORITY=%i", LOG_INFO, "REDFISH_MESSAGE_ID=%s",
                     "OpenBMC.0.1.PowerRestorePolicyApplied", NULL);
 
-            if (policy->compare("AlwaysOn") == 0)
+            if (policy->compare("xyz.openbmc_project.Control.Power.RestorePolicy.Policy.AlwaysOn") == 0)
             {
                 sendPowerControlEvent(Event::powerOnRequest);
                 setRestartCauseProperty(getRestartCause(RestartCause::powerPolicyOn));
             }
-            else if (policy->compare("Policy.Restore") == 0)
+            else if (policy->compare("xyz.openbmc_project.Control.Power.RestorePolicy.Policy.Restore") == 0)
             {
                 if (wasPowerDropped())
                 {
@@ -1517,6 +1518,7 @@ int main(int argc, char* argv[])
     // Initialize the power state storage
     if (power_control::initializePowerStateStorage() < 0)
     {
+        std::cerr << "initializePowerStateStorage return Error ";
         return -1;
     }
 
