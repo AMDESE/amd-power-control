@@ -1,5 +1,7 @@
 [Unit]
 Description=Amd Power Control
+Wants=mapper-wait@-xyz-openbmc_project-inventory.service
+After=dimm-info.service
 
 [Service]
 Restart=always
