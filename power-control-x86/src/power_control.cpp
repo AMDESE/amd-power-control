@@ -1487,6 +1487,8 @@ int main(int argc, char* argv[])
 {
     std::cerr << "Start Chassis power control service...\n";
 
+    if (system("/usr/sbin/dimm-info.sh") != 0)
+        std::cerr << "Error calling dimm-info.sh in Chassis power control service \n";
     power_control::conn =
         std::make_shared<sdbusplus::asio::connection>(power_control::io);
 
@@ -1522,8 +1524,6 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    // Check if we need to start the Power Restore policy
-    power_control::powerRestorePolicyCheck();
     power_control::nmiSourcePropertyMonitor();
 
     std::cerr << "Initializing power state. ";
@@ -1804,6 +1804,9 @@ int main(int argc, char* argv[])
     {
         return -1;
     }
+
+    // Check if we need to start the Power Restore policy
+    power_control::powerRestorePolicyCheck();
 
     // Set BMC_READY to High
     if (!power_control::setGPIOOutput("ASSERT_BMC_READY", 1, gpioLine))
