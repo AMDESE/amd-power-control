@@ -34,6 +34,10 @@
 #include <iostream>
 #include <string_view>
 
+#include <thread>
+#define CHASSIS_INTRUDED         (0)
+#define INTRUSION_POLL_INTERVAL  (1)
+
 namespace power_control
 {
 static boost::asio::io_service io;
@@ -1390,6 +1394,57 @@ void systemReset()
         systemdBusname, systemdPath, systemdInterface, "StartUnit",
         systemTargetName, "replace");
 }
+static void chassisIntrusionMonitor()
+{
+    /* AST2500/2600 chass intrusion controller dev path */
+    const std::string driver_path = "/sys/devices/platform/ahb/ahb:apb/1e6ef010.chassis/hwmon/";
+    const std::string hwmon_filename = "/intrusion0_alarm";
+    std::string hwmon_folder;
+
+    /* we don't know hwmon folder's number in path, search platform.
+       driver creates only one hwmon folder, break on first result */
+    if (std::filesystem::exists (driver_path))
+    {
+        for (const auto& folder : std::filesystem::directory_iterator(driver_path))
+        {
+            hwmon_folder = folder.path();
+            break;
+        }
+
+        /* check for intrusion sysfs file, 0 -> assert, 1 -> deassert */
+        if (std::filesystem::exists (hwmon_folder + hwmon_filename))
+        {
+            /* create polling thread, interval 1 sec (phosphor-hwmon default interval) */
+            std::thread([hwmon_folder, hwmon_filename](){
+                std::ifstream hfile;
+                unsigned int alarm_status;
+                unsigned int prev_status = 0xFF;
+                while(1) {
+                    std::this_thread::sleep_for(std::chrono::seconds(INTRUSION_POLL_INTERVAL));
+                    hfile.open(hwmon_folder + hwmon_filename);
+                    hfile >> alarm_status;
+                    hfile.close();
+                    if(prev_status != alarm_status)
+                    {
+                        prev_status = alarm_status;
+                        if(alarm_status == CHASSIS_INTRUDED)
+                        {
+                            sd_journal_send("MESSAGE=Chassis Intrusion Detected. Current state: Open",
+                                    "PRIORITY=%i", LOG_WARNING, "REDFISH_MESSAGE_ID=%s",
+                                    "OpenBMC.0.1.ChassisIntrusionDetected", NULL);
+                        }
+                        else
+                        {
+                            sd_journal_send("MESSAGE=Chassis Intrusion Recovered. Current state: Closed",
+                                    "PRIORITY=%i", LOG_INFO, "REDFISH_MESSAGE_ID=%s",
+                                    "OpenBMC.0.1.ChassisIntrusionReset", NULL);
+                        }
+                    }
+                }
+            }).detach();
+        }
+    }
+}
 
 static void nmiSetEnableProperty(bool value)
 {
@@ -1524,6 +1579,7 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    power_control::chassisIntrusionMonitor();
     power_control::nmiSourcePropertyMonitor();
 
     std::cerr << "Initializing power state. ";
