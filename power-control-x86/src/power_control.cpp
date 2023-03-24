@@ -1804,6 +1804,8 @@ int main(int argc, char* argv[])
     {
         return -1;
     }
+    else
+	system("yaapd -v 4 &");
 
     // Set BMC_READY to High
     if (!power_control::setGPIOOutput("ASSERT_BMC_READY", 1, gpioLine))
