@@ -784,16 +784,20 @@ static int setGPIOOutputForMs(const std::string& name, const int value,
 static void powerOn()
 {
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
+    system("systemctl enable yaapd.service");
+    system("systemctl start yaapd.service");
 }
 
 static void gracefulPowerOff()
 {
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
+    system("systemctl stop yaapd.service");
 }
 
 static void forcePowerOff()
 {
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, forceOffPulseTimeMs);
+    system("systemctl stop yaapd.service");
     return;
 }
 
