@@ -40,7 +40,7 @@ static boost::asio::io_service io;
 std::shared_ptr<sdbusplus::asio::connection> conn;
 
 static std::string node = "0";
-
+static bool yaap_enable = true;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> hostIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> chassisIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> chassisSysIface;
@@ -784,16 +784,26 @@ static int setGPIOOutputForMs(const std::string& name, const int value,
 static void powerOn()
 {
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
+
+    //Enable yaap service only the first time
+    if(yaap_enable ==true){
+      system("systemctl enable yaapd.service");
+      yaap_enable = false;
+    }
+    system("systemctl start yaapd.service");
 }
 
 static void gracefulPowerOff()
 {
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
+    system("systemctl stop yaapd.service");
+
 }
 
 static void forcePowerOff()
 {
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, forceOffPulseTimeMs);
+    system("systemctl stop yaapd.service");
     return;
 }
 
