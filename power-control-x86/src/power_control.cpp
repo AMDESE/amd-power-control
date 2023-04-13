@@ -98,6 +98,10 @@ static gpiod::line nmiButtonLine;
 static boost::asio::posix::stream_descriptor nmiButtonEvent(io);
 static gpiod::line idButtonLine;
 static boost::asio::posix::stream_descriptor idButtonEvent(io);
+static gpiod::line P0ThermtripLine;
+static boost::asio::posix::stream_descriptor P0ThermtripEvent(io);
+static gpiod::line P1ThermtripLine;
+static boost::asio::posix::stream_descriptor P1ThermtripEvent(io);
 
 enum class PowerState
 {
@@ -482,6 +486,7 @@ enum class RestartCause
     powerPolicyOn,
     powerPolicyRestore,
     softReset,
+    RSMReset,
 };
 static boost::container::flat_set<RestartCause> causeSet;
 static std::string getRestartCause(RestartCause cause)
@@ -510,6 +515,9 @@ static std::string getRestartCause(RestartCause cause)
             break;
         case RestartCause::softReset:
             return "xyz.openbmc_project.State.Host.RestartCause.SoftReset";
+            break;
+        case RestartCause::RSMReset:
+            return "xyz.openbmc_project.State.Host.RestartCause.RSMReset";
             break;
         default:
             return "xyz.openbmc_project.State.Host.RestartCause.Unknown";
@@ -564,6 +572,10 @@ static void setRestartCause()
     else if (causeSet.contains(RestartCause::softReset))
     {
         restartCause = getRestartCause(RestartCause::softReset);
+    }
+    else if (causeSet.contains(RestartCause::RSMReset))
+    {
+        restartCause = getRestartCause(RestartCause::RSMReset);
     }
 
     setRestartCauseProperty(restartCause);
@@ -871,6 +883,11 @@ static void reset()
         setGPIOOutputForMs("ASSERT_RST_BTN", 1, resetPulseTimeMs);
     }
 
+}
+
+static void RSMreset()
+{
+    setGPIOOutputForMs("RSMRST", 1, resetPulseTimeMs);
 }
 
 static void gracefulPowerOffTimerStart()
@@ -1410,6 +1427,64 @@ static void resetButtonHandler()
         });
 }
 
+static void P0ThermtripHandler()
+{
+    gpiod::line_event gpioLineEvent = P0ThermtripLine.event_read();
+
+    if (gpioLineEvent.event_type == gpiod::line_event::FALLING_EDGE)
+    {
+        std::string ras_err_msg = "P0 Thermtrip detected. BMC will issue RSMRST";
+        sd_journal_print(LOG_DEBUG, "P0 Thermtrip received, issue RSMRST\n");
+        sd_journal_send("MESSAGE=%s", ras_err_msg.c_str(), "PRIORITY=%i",
+                        LOG_ERR, "REDFISH_MESSAGE_ID=%s",
+                        "OpenBMC.0.1.CPUError", "REDFISH_MESSAGE_ARGS=%s",
+                        ras_err_msg.c_str(), NULL);
+        RSMreset();
+        addRestartCause(RestartCause::RSMReset);
+    }
+
+    P0ThermtripEvent.async_wait(
+        boost::asio::posix::stream_descriptor::wait_read,
+        [](const boost::system::error_code ec) {
+            if (ec)
+            {
+                std::cerr << "P0 Thermtrip handler error: "
+                          << ec.message() << "\n";
+                return;
+            }
+            P0ThermtripHandler();
+        });
+}
+
+static void P1ThermtripHandler()
+{
+    gpiod::line_event gpioLineEvent = P1ThermtripLine.event_read();
+
+    if (gpioLineEvent.event_type == gpiod::line_event::FALLING_EDGE)
+    {
+        std::string ras_err_msg = "P1 Thermtrip detected. BMC will issue RSMRST";
+        sd_journal_print(LOG_DEBUG, "P1 Thermtrip received, issue RSMRST\n");
+        sd_journal_send("MESSAGE=%s", ras_err_msg.c_str(), "PRIORITY=%i",
+                        LOG_ERR, "REDFISH_MESSAGE_ID=%s",
+                        "OpenBMC.0.1.CPUError", "REDFISH_MESSAGE_ARGS=%s",
+                        ras_err_msg.c_str(), NULL);
+        RSMreset();
+        addRestartCause(RestartCause::RSMReset);
+    }
+
+    P1ThermtripEvent.async_wait(
+        boost::asio::posix::stream_descriptor::wait_read,
+        [](const boost::system::error_code ec) {
+            if (ec)
+            {
+                std::cerr << "P1 Thermtrip handler error: "
+                          << ec.message() << "\n";
+                return;
+            }
+            P1ThermtripHandler();
+        });
+}
+
 static constexpr auto systemdBusname = "org.freedesktop.systemd1";
 static constexpr auto systemdPath = "/org/freedesktop/systemd1";
 static constexpr auto systemdInterface = "org.freedesktop.systemd1.Manager";
@@ -1583,6 +1658,10 @@ static void idButtonHandler()
 
 int main(int argc, char* argv[])
 {
+    const std::string P0ThermTrip = "P0_THERMTRIP_L";
+    const std::string P1ThermTrip = "P1_THERMTRIP_L";
+    gpiod::line gpioLine;
+
     std::cerr << "Start Chassis power control service...\n";
 
     bool platformID = power_control::getPlatformID();
@@ -1619,8 +1698,22 @@ int main(int argc, char* argv[])
     // Request ID_BUTTON GPIO events
     power_control::requestGPIOEvents("CHASSIS_ID_BTN", power_control::idButtonHandler, power_control::idButtonLine, power_control::idButtonEvent);
 
+    // Request P0 Thermtrip GPIO events
+    gpioLine = gpiod::find_line(P0ThermTrip);
+    if(gpioLine)
+    {
+        power_control::requestGPIOEvents("P0_THERMTRIP_L",
+            power_control::P0ThermtripHandler, power_control::P0ThermtripLine, power_control::P0ThermtripEvent);
+    }
+    // Request P1 Thermtrip GPIO events
+    gpioLine = gpiod::find_line(P1ThermTrip);
+    if(gpioLine)
+    {
+        power_control::requestGPIOEvents("P1_THERMTRIP_L",
+            power_control::P1ThermtripHandler, power_control::P1ThermtripLine, power_control::P1ThermtripEvent);
+    }
+
     // Set BMC_READY to High
-    gpiod::line gpioLine;
 
     if (power_control::isDaytonax)
     {
