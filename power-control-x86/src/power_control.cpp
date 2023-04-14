@@ -620,9 +620,12 @@ static void nmiDiagIntLog()
 
 static void RSMresetLog()
 {
-    sd_journal_send("MESSAGE=PowerControl: RSM Reset Request",
-                    "PRIORITY=%i", LOG_INFO, "REDFISH_MESSAGE_ID=%s",
-                    "OpenBMC.0.1.ResetButtonPressed", NULL);
+    std::string ras_err_msg = "Request to issue SOC Reset (RSMRST)";
+    sd_journal_print(LOG_DEBUG, "Request to issue SOC Reset (RSMRST)\n");
+    sd_journal_send("MESSAGE=%s", ras_err_msg.c_str(), "PRIORITY=%i",
+                        LOG_ERR, "REDFISH_MESSAGE_ID=%s",
+                        "OpenBMC.0.1.CPUError", "REDFISH_MESSAGE_ARGS=%s",
+                        ras_err_msg.c_str(), NULL);
 }
 
 static int initializePowerStateStorage()
@@ -1952,7 +1955,7 @@ int main(int argc, char* argv[])
 
     // RSMRST out Interface
     power_control::rsmOutIface =
-    nmiOutServer.add_interface("/xyz/openbmc_project/control/host0/SOCreset",
+    nmiOutServer.add_interface("/xyz/openbmc_project/control/host0/SOCReset",
                                        "xyz.openbmc_project.Control.Host.SOCReset");
     power_control::rsmOutIface->register_method("SOCReset",
                                                  power_control::RSMreset);
