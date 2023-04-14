@@ -1952,9 +1952,9 @@ int main(int argc, char* argv[])
 
     // RSMRST out Interface
     power_control::rsmOutIface =
-    nmiOutServer.add_interface("/xyz/openbmc_project/control/host0/rsm",
-                                       "xyz.openbmc_project.Control.Host.RSM");
-    power_control::rsmOutIface->register_method("RSM",
+    nmiOutServer.add_interface("/xyz/openbmc_project/control/host0/SOCreset",
+                                       "xyz.openbmc_project.Control.Host.SOCReset");
+    power_control::rsmOutIface->register_method("SOCReset",
                                                  power_control::RSMreset);
     power_control::rsmOutIface->initialize();
 
