@@ -41,6 +41,7 @@ std::shared_ptr<sdbusplus::asio::connection> conn;
 
 static std::string node = "0";
 static bool yaap_enable = true;
+
 static std::shared_ptr<sdbusplus::asio::dbus_interface> hostIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> chassisIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> chassisSysIface;
@@ -51,6 +52,7 @@ static std::shared_ptr<sdbusplus::asio::dbus_interface> osIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> idButtonIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> nmiOutIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> restartCauseIface;
+static std::shared_ptr<sdbusplus::asio::dbus_interface> rsmOutIface;
 
 const static constexpr int powerPulseTimeMs = 100;
 const static constexpr int forceOffPulseTimeMs = 5000;
@@ -92,6 +94,10 @@ static gpiod::line powerButtonLine;
 static boost::asio::posix::stream_descriptor powerButtonEvent(io);
 static gpiod::line resetButtonLine;
 static boost::asio::posix::stream_descriptor resetButtonEvent(io);
+static gpiod::line P0ThermtripLine;
+static boost::asio::posix::stream_descriptor P0ThermtripEvent(io);
+static gpiod::line P1ThermtripLine;
+static boost::asio::posix::stream_descriptor P1ThermtripEvent(io);
 
 enum class PowerState
 {
@@ -570,6 +576,16 @@ static void nmiDiagIntLog()
                     "OpenBMC.0.1.NMIDiagnosticInterrupt", NULL);
 }
 
+static void RSMresetLog()
+{
+    std::string ras_err_msg = "Request to issue SOC Reset (RSMRST)";
+    sd_journal_print(LOG_DEBUG, "Request to issue SOC Reset (RSMRST)\n");
+    sd_journal_send("MESSAGE=%s", ras_err_msg.c_str(), "PRIORITY=%i",
+                        LOG_ERR, "REDFISH_MESSAGE_ID=%s",
+                        "OpenBMC.0.1.CPUError", "REDFISH_MESSAGE_ARGS=%s",
+                        ras_err_msg.c_str(), NULL);
+}
+
 static int initializePowerStateStorage()
 {
     // create the power control directory if it doesn't exist
@@ -797,7 +813,6 @@ static void gracefulPowerOff()
 {
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
     system("systemctl stop yaapd.service");
-
 }
 
 static void forcePowerOff()
@@ -810,6 +825,15 @@ static void forcePowerOff()
 static void reset()
 {
     setGPIOOutputForMs("ASSERT_RST_BTN_L", 0, resetPulseTimeMs);
+}
+
+static void RSMreset()
+{
+    setGPIOOutputForMs("RSMRST", 1, resetPulseTimeMs);
+
+    // log to redfish
+    RSMresetLog();
+    std::cerr << "RSM Reset action completed\n";
 }
 
 static void gracefulPowerOffTimerStart()
@@ -1381,6 +1405,62 @@ static void resetButtonHandler()
         });
 }
 
+static void P0ThermtripHandler()
+{
+    gpiod::line_event gpioLineEvent = P0ThermtripLine.event_read();
+
+    if (gpioLineEvent.event_type == gpiod::line_event::FALLING_EDGE)
+    {
+        std::string ras_err_msg = "P0 Thermtrip detected. BMC will issue RSMRST";
+        sd_journal_print(LOG_DEBUG, "P0 Thermtrip received, issue RSMRST\n");
+        sd_journal_send("MESSAGE=%s", ras_err_msg.c_str(), "PRIORITY=%i",
+                        LOG_ERR, "REDFISH_MESSAGE_ID=%s",
+                        "OpenBMC.0.1.CPUError", "REDFISH_MESSAGE_ARGS=%s",
+                        ras_err_msg.c_str(), NULL);
+        RSMreset();
+    }
+
+    P0ThermtripEvent.async_wait(
+        boost::asio::posix::stream_descriptor::wait_read,
+        [](const boost::system::error_code ec) {
+            if (ec)
+            {
+                std::cerr << "P0 Thermtrip handler error: "
+                          << ec.message() << "\n";
+                return;
+            }
+            P0ThermtripHandler();
+        });
+}
+
+static void P1ThermtripHandler()
+{
+    gpiod::line_event gpioLineEvent = P1ThermtripLine.event_read();
+
+    if (gpioLineEvent.event_type == gpiod::line_event::FALLING_EDGE)
+    {
+        std::string ras_err_msg = "P1 Thermtrip detected. BMC will issue RSMRST";
+        sd_journal_print(LOG_DEBUG, "P1 Thermtrip received, issue RSMRST\n");
+        sd_journal_send("MESSAGE=%s", ras_err_msg.c_str(), "PRIORITY=%i",
+                        LOG_ERR, "REDFISH_MESSAGE_ID=%s",
+                        "OpenBMC.0.1.CPUError", "REDFISH_MESSAGE_ARGS=%s",
+                        ras_err_msg.c_str(), NULL);
+        RSMreset();
+    }
+
+    P1ThermtripEvent.async_wait(
+        boost::asio::posix::stream_descriptor::wait_read,
+        [](const boost::system::error_code ec) {
+            if (ec)
+            {
+                std::cerr << "P1 Thermtrip handler error: "
+                          << ec.message() << "\n";
+                return;
+            }
+            P1ThermtripHandler();
+        });
+}
+
 static constexpr auto systemdBusname = "org.freedesktop.systemd1";
 static constexpr auto systemdPath = "/org/freedesktop/systemd1";
 static constexpr auto systemdInterface = "org.freedesktop.systemd1.Manager";
@@ -1495,6 +1575,10 @@ static void setNmiSource()
 
 int main(int argc, char* argv[])
 {
+    const std::string P0ThermTrip = "P0_THERMTRIP_L";
+    const std::string P1ThermTrip = "P1_THERMTRIP_L";
+    gpiod::line gpioLine;
+
     std::cerr << "Start Chassis power control service...\n";
 
     if (system("/usr/sbin/dimm-info.sh") != 0)
@@ -1518,6 +1602,23 @@ int main(int argc, char* argv[])
 
     // Request RESET_BUTTON GPIO events
     power_control::requestGPIOEvents("MON_RST_BTN_L", power_control::resetButtonHandler, power_control::resetButtonLine, power_control::resetButtonEvent);
+
+    // Request P0 Thermtrip GPIO events
+    gpioLine = gpiod::find_line(P0ThermTrip);
+    if(gpioLine)
+    {
+        std::cerr << "P0_THERMTRIP_L is present \n";
+        power_control::requestGPIOEvents("P0_THERMTRIP_L",
+            power_control::P0ThermtripHandler, power_control::P0ThermtripLine, power_control::P0ThermtripEvent);
+    }
+    // Request P1 Thermtrip GPIO events
+    gpioLine = gpiod::find_line(P1ThermTrip);
+    if(gpioLine)
+    {
+        std::cerr << "P1_THERMTRIP_L is present \n";
+        power_control::requestGPIOEvents("P1_THERMTRIP_L",
+            power_control::P1ThermtripHandler, power_control::P1ThermtripLine, power_control::P1ThermtripEvent);
+    }
 
     // Initialize the power state
     power_control::powerState = power_control::PowerState::off;
@@ -1735,6 +1836,13 @@ int main(int argc, char* argv[])
                                                  power_control::nmiReset);
     power_control::nmiOutIface->initialize();
 
+    // NMI out Interface
+    power_control::rsmOutIface =
+    nmiOutServer.add_interface("/xyz/openbmc_project/control/host0/SOCReset",
+                                       "xyz.openbmc_project.Control.Host.SOCReset");
+    power_control::rsmOutIface->register_method("SOCReset",
+                                                 power_control::RSMreset);
+    power_control::rsmOutIface->initialize();
 
     // OS State Service
     sdbusplus::asio::object_server osServer =
@@ -1796,7 +1904,6 @@ int main(int argc, char* argv[])
 
     power_control::currentHostStateMonitor();
 
-    gpiod::line gpioLine;
     // Set ASSERT_NMI_BTN_L to High
     if (!power_control::setGPIOOutput("ASSERT_NMI_BTN_L", 1, gpioLine))
     {
