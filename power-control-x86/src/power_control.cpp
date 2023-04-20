@@ -1927,6 +1927,10 @@ int main(int argc, char* argv[])
     {
         return -1;
     }
+    else
+    {
+        system("systemctl start yaapd.service");
+    }
 
     // Check if we need to start the Power Restore policy
     power_control::powerRestorePolicyCheck();
