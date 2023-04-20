@@ -40,7 +40,6 @@ static boost::asio::io_service io;
 std::shared_ptr<sdbusplus::asio::connection> conn;
 
 static std::string node = "0";
-static bool yaap_enable = true;
 
 static std::shared_ptr<sdbusplus::asio::dbus_interface> hostIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> chassisIface;
@@ -799,26 +798,17 @@ static int setGPIOOutputForMs(const std::string& name, const int value,
 
 static void powerOn()
 {
-    //Enable yaap service only the first time
-    if(yaap_enable == true){
-      system("systemctl enable yaapd.service");
-      yaap_enable = false;
-    }
-    system("systemctl start yaapd.service");
-
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
 }
 
 static void gracefulPowerOff()
 {
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
-    system("systemctl stop yaapd.service");
 }
 
 static void forcePowerOff()
 {
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, forceOffPulseTimeMs);
-    system("systemctl stop yaapd.service");
     return;
 }
 
@@ -1927,6 +1917,9 @@ int main(int argc, char* argv[])
     {
         return -1;
     }
+
+    //Starting YAAP service once BMC_READY signal is received
+    system("systemctl start yaapd.service");
 
     // Check if we need to start the Power Restore policy
     power_control::powerRestorePolicyCheck();
