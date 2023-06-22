@@ -1894,6 +1894,16 @@ int main(int argc, char* argv[])
 
     power_control::currentHostStateMonitor();
 
+
+    // Set TOGGLE_RSMRST to Low
+    power_control::setGPIOOutput("RSMRST", 0, gpioLine);
+
+    // Set ASSERT_WARM_RST_BTN_L to High
+    if (!power_control::setGPIOOutput("ASSERT_WARM_RST_BTN_L", 1, gpioLine))
+    {
+        return -1;
+    }
+
     // Set ASSERT_NMI_BTN_L to High
     if (!power_control::setGPIOOutput("ASSERT_NMI_BTN_L", 1, gpioLine))
     {
@@ -1918,11 +1928,11 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    //Starting YAAP service once BMC_READY signal is received
-    system("systemctl start yaapd.service");
-
     // Check if we need to start the Power Restore policy
     power_control::powerRestorePolicyCheck();
+
+    //Starting YAAP service once BMC_READY signal is received
+    system("systemctl start yaapd.service");
 
     power_control::io.run();
 
