@@ -15,6 +15,11 @@
 // limitations under the License.
 */
 
+extern "C" {
+#include <linux/i2c-dev.h>
+#include <linux/i2c.h>
+#include <i2c/smbus.h>
+}
 
 #include <sys/sysinfo.h>
 #include <systemd/sd-journal.h>
@@ -38,6 +43,19 @@
 #define COMMAND_OUTPUT_LEN  (8)
 #define ETHANOLX_ID         ('4')
 #define DAYTONAX_ID         ('6')
+
+// Front Panel
+// Volcano Front Panel i2c bus
+#define FP_I2C_BUS1            (206)
+//Purico Front Panel i2c bus
+#define FP_I2C_BUS2            (276)
+#define FP_IOX_ADDR            (0x1B)
+#define FP_IOX_PORT_REG        (0x03)
+#define FP_IOX_DATA_REG        (0x01)
+#define FILEPATHSIZE           (64)
+#define FP_POWER_PORT_MASK     (0xFD)
+#define FP_POWER_ON_REG_MASK   (0x0D)
+#define FP_POWER_OFF_REG_MASK  (0x02)
 
 namespace power_control
 {
@@ -195,18 +213,57 @@ static int getGPIOValue(const std::string& name)
     return value;
 }
 
+static void setFrontpanelPowerLed(bool led)
+{
+    int fd = -1;
+    char i2c_devname[FILEPATHSIZE];
+    int portRead, portWrite, dataRead, dataWrite;
+
+    // check volcano FP
+    snprintf(i2c_devname, FILEPATHSIZE, "/dev/i2c-%d", FP_I2C_BUS1);
+    fd = open(i2c_devname, O_RDWR);
+    if(fd < 0) {
+        // check Purico FP
+        snprintf(i2c_devname, FILEPATHSIZE, "/dev/i2c-%d", FP_I2C_BUS2);
+        fd = open(i2c_devname, O_RDWR);
+        if(fd < 0)
+            return; // cannot open i2c bus
+    }
+
+    if (ioctl(fd, I2C_SLAVE, FP_IOX_ADDR) >= 0) {
+        // read IOX Port Reg
+        portRead = i2c_smbus_read_byte_data(fd, FP_IOX_PORT_REG);
+        dataRead = i2c_smbus_read_byte_data(fd, FP_IOX_DATA_REG);
+        portWrite = portRead & FP_POWER_PORT_MASK;
+        if (led == true)
+            dataWrite = dataRead & FP_POWER_ON_REG_MASK;
+        else
+            dataWrite = dataRead | FP_POWER_OFF_REG_MASK;
+        i2c_smbus_write_byte_data(fd, FP_IOX_PORT_REG, portWrite);
+        i2c_smbus_write_byte_data(fd, FP_IOX_DATA_REG, dataWrite);
+    }
+    else {
+        std::cerr << "Error ioctl call for Front Panel i2c device " << FP_IOX_ADDR << " \n";
+    }
+    if (fd >= 0) {
+        close(fd);
+    }
+}
+
 static PowerState powerState;
 static std::string getPowerStateName(PowerState state)
 {
     switch (state)
     {
         case PowerState::on:
+            setFrontpanelPowerLed(true);
             return "On";
             break;
         case PowerState::waitForPSPowerOK:
             return "Wait for Power Supply Power OK";
             break;
         case PowerState::off:
+            setFrontpanelPowerLed(false);
             return "Off";
             break;
         case PowerState::transitionToOff:
