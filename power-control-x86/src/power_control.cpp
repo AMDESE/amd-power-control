@@ -41,9 +41,8 @@ extern "C" {
 #include <string_view>
 
 // Front Panel
-// Volcano Front Panel i2c bus
-#define FP_I2C_BUS1            (206)
-//Purico Front Panel i2c bus
+#define VOLCANO_FP_I2C_BUS     (206)
+#define PURICO_FP_I2C_BUS      (276)
 #define FP_I2C_BUS2            (276)
 #define FP_IOX_ADDR            (0x1B)
 #define FP_IOX_PORT_REG        (0x03)
@@ -163,22 +162,17 @@ static int getGPIOValue(const std::string& name)
     return value;
 }
 
-static void setFrontpanelPowerLed(bool led)
+static bool i2cCommandLed(int bus, bool led)
 {
     int fd = -1;
     char i2c_devname[FILEPATHSIZE];
     int portRead, portWrite, dataRead, dataWrite;
 
-    // check volcano FP
-    snprintf(i2c_devname, FILEPATHSIZE, "/dev/i2c-%d", FP_I2C_BUS1);
+    // check FP I2C Bus
+    snprintf(i2c_devname, FILEPATHSIZE, "/dev/i2c-%d", bus);
     fd = open(i2c_devname, O_RDWR);
-    if(fd < 0) {
-        // check Purico FP
-        snprintf(i2c_devname, FILEPATHSIZE, "/dev/i2c-%d", FP_I2C_BUS2);
-        fd = open(i2c_devname, O_RDWR);
-        if(fd < 0)
-            return; // cannot open i2c bus
-    }
+    if(fd < 0)
+        return false; // cannot open i2c bus
 
     if (ioctl(fd, I2C_SLAVE, FP_IOX_ADDR) >= 0) {
         // read IOX Port Reg
@@ -192,11 +186,21 @@ static void setFrontpanelPowerLed(bool led)
         i2c_smbus_write_byte_data(fd, FP_IOX_PORT_REG, portWrite);
         i2c_smbus_write_byte_data(fd, FP_IOX_DATA_REG, dataWrite);
     }
-    else {
+    else
         std::cerr << "Error ioctl call for Front Panel i2c device " << FP_IOX_ADDR << " \n";
-    }
-    if (fd >= 0) {
+
+    if (fd >= 0)
         close(fd);
+
+    return true;
+}
+
+static void setFrontpanelPowerLed(bool led)
+{
+    // check Volcano FP
+    if (i2cCommandLed(VOLCANO_FP_I2C_BUS, led) == false) {
+        // check Purico FP
+        i2cCommandLed(PURICO_FP_I2C_BUS, led);
     }
 }
 
