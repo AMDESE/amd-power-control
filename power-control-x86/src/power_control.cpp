@@ -198,10 +198,9 @@ static bool i2cCommandLed(int bus, bool led)
 static void setFrontpanelPowerLed(bool led)
 {
     // check Volcano FP
-    if (i2cCommandLed(VOLCANO_FP_I2C_BUS, led) == false) {
-        // check Purico FP
-        i2cCommandLed(PURICO_FP_I2C_BUS, led);
-    }
+    i2cCommandLed(VOLCANO_FP_I2C_BUS, led);
+    // check Purico FP
+    i2cCommandLed(PURICO_FP_I2C_BUS, led);
 }
 
 static PowerState powerState;
