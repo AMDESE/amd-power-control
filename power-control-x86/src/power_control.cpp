@@ -1989,6 +1989,17 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    // check RSMRST line for 1 sec
+    for (int i=0; i<10; i++)
+    {
+        if (power_control::getGPIOValue("MON_RSMRST_L") == 0)
+        {
+            std::cerr << "RSMRST = 0  \n";
+            usleep(100000);
+        }
+        else
+            break;
+    }
     // Check if we need to start the Power Restore policy
     power_control::powerRestorePolicyCheck();
 
