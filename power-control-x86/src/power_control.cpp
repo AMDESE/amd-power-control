@@ -52,6 +52,10 @@ extern "C" {
 #define FP_POWER_ON_REG_MASK   (0x0D)
 #define FP_POWER_OFF_REG_MASK  (0x02)
 
+// RSMRST check
+#define MON_RSMRST_MAX_LOOP    (10)
+#define MON_RSMRST_SLEEP_USEC  (100000)
+
 namespace power_control
 {
 static boost::asio::io_service io;
@@ -1628,6 +1632,7 @@ int main(int argc, char* argv[])
 {
     const std::string P0ThermTrip = "P0_THERMTRIP_L";
     const std::string P1ThermTrip = "P1_THERMTRIP_L";
+    const std::string MonRSMRST   = "MON_RSMRST_L";
     gpiod::line gpioLine;
 
     std::cerr << "Start Chassis power control service...\n";
@@ -1989,6 +1994,21 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    // check RSMRST line for max 1 sec
+    gpioLine = gpiod::find_line(MonRSMRST);
+    if(gpioLine)
+    {
+        for (int i=0; i < MON_RSMRST_MAX_LOOP; i++)
+        {
+            if (power_control::getGPIOValue(MonRSMRST) == 0)
+            {
+                std::cerr << "RSMRST = 0  \n";
+                usleep(MON_RSMRST_SLEEP_USEC);
+            }
+            else
+                break;
+        }
+    }
     // Check if we need to start the Power Restore policy
     power_control::powerRestorePolicyCheck();
 
