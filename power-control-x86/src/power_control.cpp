@@ -51,6 +51,8 @@ extern "C" {
 #define FP_POWER_PORT_MASK     (0xFD)
 #define FP_POWER_ON_REG_MASK   (0x0D)
 #define FP_POWER_OFF_REG_MASK  (0x02)
+#define COMMAND_BOARD_ID ("/sbin/fw_printenv -n board_id")
+#define COMMAND_LEN 				 (3)
 
 // RSMRST check
 #define MON_RSMRST_SLEEP_SEC   (1)
@@ -860,18 +862,62 @@ static int setGPIOOutputForMs(const std::string& name, const int value,
     return 0;
 }
 
+static void stopSOLservice()
+{
+	system("/bin/systemctl mask obmc-console@ttyS0.service obmc-console@ttyVUART0.service");
+	system("/bin/systemctl stop obmc-console@ttyS0.service obmc-console@ttyVUART0.service");
+	std::cerr << "SOL service stopped as Host powered off\n";
+}
+
+static void startSOLservice()
+{
+	system("/bin/systemctl unmask obmc-console@ttyS0.service obmc-console@ttyVUART0.service");
+	system("/bin/systemctl start obmc-console@ttyS0.service obmc-console@ttyVUART0.service");
+	std::cerr << "SOL service started as Host powering on/n";
+}
+
+unsigned int getBoardID()
+{
+    FILE* pf;
+    char data[COMMAND_LEN];
+    std::stringstream ss;
+    unsigned int board_id=0;
+
+    pf = popen(COMMAND_BOARD_ID, "r");
+    if (pf)
+    {
+        if (fgets(data, COMMAND_LEN, pf))
+        {
+            ss << std::hex << (std::string)data;
+            ss >> board_id;
+            sd_journal_print(LOG_DEBUG, "Power-ctrl: Board ID: 0x%x, Board ID String: %s\n", board_id, data);
+        }
+        pclose(pf);
+    }
+    return board_id;
+}
+
 static void powerOn()
 {
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
+    if (getBoardID() == 0x5D) {
+            startSOLservice();
+    }
 }
 
 static void gracefulPowerOff()
 {
+    if (getBoardID() == 0x5D) {
+            stopSOLservice();
+    }
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, powerPulseTimeMs);
 }
 
 static void forcePowerOff()
 {
+    if (getBoardID() == 0x5D) {
+            stopSOLservice();
+    }
     setGPIOOutputForMs("ASSERT_PWR_BTN_L", 0, forceOffPulseTimeMs);
     return;
 }
