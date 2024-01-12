@@ -61,6 +61,10 @@ static boost::asio::io_service io;
 std::shared_ptr<sdbusplus::asio::connection> conn;
 
 static std::string node = "0";
+static std::string TURIN_FAMILY = "1a (26)";
+static std::string TURIN_MODEL_A = "0 (0)";
+static std::string TURIN_MODEL_B = "1 (1)";
+static std::string TURIN_MODEL_C = "2 (2)";
 
 static std::shared_ptr<sdbusplus::asio::dbus_interface> hostIface;
 static std::shared_ptr<sdbusplus::asio::dbus_interface> chassisIface;
@@ -881,6 +885,60 @@ static void reset()
     setGPIOOutputForMs("ASSERT_RST_BTN_L", 0, resetPulseTimeMs);
 }
 
+template <typename T>
+T getProperty(sdbusplus::bus::bus& bus, const char* service, const char* path,
+              const char* interface, const char* propertyName)
+{
+    auto method = bus.new_method_call(service, path,
+                                      "org.freedesktop.DBus.Properties", "Get");
+    method.append(interface, propertyName);
+    std::variant<T> value{};
+    try
+    {
+        auto reply = bus.call(method);
+        reply.read(value);
+    }
+    catch (const sdbusplus::exception::SdBusError& ex)
+    {
+        sd_journal_print(LOG_ERR, "GetProperty call failed \n");
+    }
+    return std::get<T>(value);
+}
+
+static bool isTurinSOC()
+{
+    sdbusplus::bus::bus bus = sdbusplus::bus::new_default();
+    bool ret = false;
+    std::string family = getProperty<std::string>(bus,
+                    "xyz.openbmc_project.Inventory.Manager",
+                    "/xyz/openbmc_project/inventory/system/processor/P0",
+                    "xyz.openbmc_project.Inventory.Item.Cpu", "Family");
+    sd_journal_print(LOG_INFO, "SOC Family:  %s %d \n", family.c_str(), family.size() );
+
+    if(family == TURIN_FAMILY)
+        ret = true;
+    return ret;
+}
+
+static bool isTurinC0()
+{
+    sdbusplus::bus::bus bus = sdbusplus::bus::new_default();
+    bool ret = false;
+
+    std::string model = getProperty<std::string>(bus,
+                    "xyz.openbmc_project.Inventory.Manager",
+                    "/xyz/openbmc_project/inventory/system/processor/P0",
+                    "xyz.openbmc_project.Inventory.Item.Cpu", "Model");
+    sd_journal_print(LOG_INFO, "Turin SOC Model:  %s (%d) \n", model.c_str(), model.size() );
+
+    if((model == TURIN_MODEL_A) ||
+       (model == TURIN_MODEL_B))
+        ret = false;
+    else
+        ret = true;
+    return ret;
+}
+
 static void RSMreset()
 {
     setGPIOOutputForMs("RSMRST", 1, resetPulseTimeMs);
@@ -1471,7 +1529,10 @@ static void P0ThermtripHandler()
                         LOG_ERR, "REDFISH_MESSAGE_ID=%s",
                         "OpenBMC.0.1.CPUError", "REDFISH_MESSAGE_ARGS=%s",
                         ras_err_msg.c_str(), NULL);
-        RSMreset();
+        // assert RSM Reset for Turin A and B
+        if((isTurinSOC() == true) &&
+           (isTurinC0()  == false))
+            RSMreset();
     }
 
     P0ThermtripEvent.async_wait(
@@ -1499,7 +1560,10 @@ static void P1ThermtripHandler()
                         LOG_ERR, "REDFISH_MESSAGE_ID=%s",
                         "OpenBMC.0.1.CPUError", "REDFISH_MESSAGE_ARGS=%s",
                         ras_err_msg.c_str(), NULL);
-        RSMreset();
+        // assert RSM Reset for Turin A and B
+        if((isTurinSOC() == true) &&
+           (isTurinC0()  == false))
+            RSMreset();
     }
 
     P1ThermtripEvent.async_wait(
