@@ -941,14 +941,20 @@ static bool isTurinC0()
 
 static void RSMreset()
 {
-    // assert RSM Reset for Turin A and B
-    if((isTurinSOC() == true) &&
-       (isTurinC0()  == false))
-        setGPIOOutputForMs("RSMRST", 1, resetPulseTimeMs);
+    // assert RSM Reset
+    setGPIOOutputForMs("RSMRST", 1, resetPulseTimeMs);
 
     // log to redfish
     RSMresetLog();
     std::cerr << "RSM Reset action completed\n";
+}
+
+static void RSMresetTurin()
+{
+    // assert RSM Reset for Turin A and B
+    if((isTurinSOC() == true) &&
+       (isTurinC0()  == false))
+        RSMreset();
 }
 
 static void gracefulPowerOffTimerStart()
@@ -1532,7 +1538,7 @@ static void P0ThermtripHandler()
                         LOG_ERR, "REDFISH_MESSAGE_ID=%s",
                         "OpenBMC.0.1.CPUError", "REDFISH_MESSAGE_ARGS=%s",
                         ras_err_msg.c_str(), NULL);
-        RSMreset();
+        RSMresetTurin();
     }
 
     P0ThermtripEvent.async_wait(
@@ -1560,7 +1566,7 @@ static void P1ThermtripHandler()
                         LOG_ERR, "REDFISH_MESSAGE_ID=%s",
                         "OpenBMC.0.1.CPUError", "REDFISH_MESSAGE_ARGS=%s",
                         ras_err_msg.c_str(), NULL);
-        RSMreset();
+        RSMresetTurin();
     }
 
     P1ThermtripEvent.async_wait(
@@ -1952,7 +1958,7 @@ int main(int argc, char* argv[])
                                                  power_control::nmiReset);
     power_control::nmiOutIface->initialize();
 
-    // NMI out Interface
+    // RSMRST Interface
     power_control::rsmOutIface =
     nmiOutServer.add_interface("/xyz/openbmc_project/control/host0/SOCReset",
                                        "xyz.openbmc_project.Control.Host.SOCReset");
